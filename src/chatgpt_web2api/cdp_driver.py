@@ -1576,13 +1576,17 @@ class CDPDriver:
         # Unreachable (the loop either returns or raises).
         raise SendReadinessError("send_baseline: exhausted retries unexpectedly")
 
-    async def _verify_send_acknowledged(self) -> bool | None:
+    async def _verify_send_acknowledged(self, *, fresh_chat: bool = False) -> bool | None:
         """P0 send acknowledgment (ChatGPT review, conv 6a52f0f3).
 
         After click_send dispatches synthetic mouse events, verify the message
         was actually accepted by React — not just that the JS event loop ran.
 
         Composite condition: user-message count increased AND composer cleared.
+        On a fresh chat only, a transition to a valid ``/c/{uuid}`` URL with
+        an empty composer is also positive acknowledgement. ChatGPT creates
+        that conversation URL only after accepting the first submission, and
+        its user-message DOM node can hydrate after the SPA navigation.
         Uses the pre-send user count baseline (self._pre_send_user_count) to
         detect the delta, not just "userCount > 0" (which is always true on
         existing conversations).
@@ -1615,7 +1619,7 @@ class CDPDriver:
                     f"       || document.querySelector('{COMPOSER_FALLBACK_SELECTOR}');"
                     "  var composerPresent = !!composer;"
                     "  var composerEmpty = composer ? !(composer.innerText || composer.value || '').trim() : false;"
-                    "  return JSON.stringify({userCount: userMsgs, composerPresent: composerPresent, composerEmpty: composerEmpty});"
+                    "  return JSON.stringify({userCount: userMsgs, composerPresent: composerPresent, composerEmpty: composerEmpty, href: location.href});"
                     "})()"
                 )
                 if not result or not result.strip().startswith("{"):
@@ -1634,6 +1638,20 @@ class CDPDriver:
                 current_count = state.get("userCount", 0)
                 if current_count > pre_send_count and state.get("composerEmpty"):
                     return True
+                if fresh_chat and state.get("composerEmpty"):
+                    # Fresh-chat /c/{uuid} navigation can precede user DOM hydration.
+                    import re as _re
+                    import uuid as _uuid
+                    match = _re.search(
+                        r"/c/([0-9a-fA-F-]{36})(?:[/?#]|$)",
+                        str(state.get("href") or ""),
+                    )
+                    if match:
+                        try:
+                            _uuid.UUID(match.group(1))
+                            return True
+                        except ValueError:
+                            pass
             except Exception:
                 pass
             await asyncio.sleep(0.5)
@@ -1791,7 +1809,9 @@ class CDPDriver:
             # could prevent sends in edge cases we haven't seen.
             if not captured_uuid:
                 try:
-                    acknowledged = await self._verify_send_acknowledged()
+                    acknowledged = await self._verify_send_acknowledged(
+                        fresh_chat=(fallback_anchor.mode == "fresh_chat"),
+                    )
                     if acknowledged is False:  # explicitly False, not None
                         raise SendReadinessError(
                             "Send not acknowledged — click dispatched but no user "

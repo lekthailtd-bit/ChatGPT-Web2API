@@ -202,3 +202,53 @@ async def test_missing_composer_returns_none_not_false():
     assert result is None, (
         f"Missing composer should return None (inconclusive), got {result!r}"
     )
+
+@pytest.mark.asyncio
+async def test_fresh_chat_conversation_url_acknowledges_before_dom_hydrates(monkeypatch):
+    driver = _make_driver()
+    driver._pre_send_user_count = 0
+
+    async def fake_js_strict(expr, timeout=15):
+        if "userCount" in expr and "composerEmpty" in expr:
+            return json.dumps({
+                "userCount": 0, "composerPresent": True, "composerEmpty": True,
+                "href": "https://chatgpt.com/g/project-id/c/6ab8dc2b-5fdc-83eb-af4f-4865b11faecf",
+            })
+        return "0"
+
+    driver._js_strict = fake_js_strict
+    assert await driver._verify_send_acknowledged(fresh_chat=True) is True
+
+
+@pytest.mark.asyncio
+async def test_existing_conversation_url_does_not_relax_ack_gate(monkeypatch):
+    driver = _make_driver()
+    driver._pre_send_user_count = 2
+
+    async def fake_js_strict(expr, timeout=15):
+        if "userCount" in expr and "composerEmpty" in expr:
+            return json.dumps({
+                "userCount": 2, "composerPresent": True, "composerEmpty": True,
+                "href": "https://chatgpt.com/c/6ab8dc2b-5fdc-83eb-af4f-4865b11faecf",
+            })
+        return "0"
+
+    driver._js_strict = fake_js_strict
+    assert await driver._verify_send_acknowledged(fresh_chat=False) is False
+
+
+@pytest.mark.asyncio
+async def test_fresh_chat_invalid_conversation_url_does_not_ack(monkeypatch):
+    driver = _make_driver()
+    driver._pre_send_user_count = 0
+
+    async def fake_js_strict(expr, timeout=15):
+        if "userCount" in expr and "composerEmpty" in expr:
+            return json.dumps({
+                "userCount": 0, "composerPresent": True, "composerEmpty": True,
+                "href": "https://chatgpt.com/g/project-id/c/not-a-conversation-id",
+            })
+        return "0"
+
+    driver._js_strict = fake_js_strict
+    assert await driver._verify_send_acknowledged(fresh_chat=True) is False
